@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from langchain_mistralai import ChatMistralAI, MistralAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_groq import ChatGroq
 
 load_dotenv()
 
@@ -38,7 +39,8 @@ retriever = vector_store.as_retriever(
     search_kwargs={"k": 4, "fetch_k": 10, "lambda_mult": 0.5},
 )
 
-llm = ChatMistralAI(model="mistral-small-2506")
+
+llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0) 
 
 prompt = ChatPromptTemplate.from_messages(
     [
