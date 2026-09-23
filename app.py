@@ -141,7 +141,7 @@ if st.session_state.chroma_dir is None:
 
 @st.cache_resource(show_spinner=False)
 def get_llm():
-    return ChatGroq(model="llama-3.3-70b-versatile", api_key=get_secret("GROQ_API_KEY"), temperature=0)
+    return ChatGroq(model="openai/gpt-oss-120b", api_key=get_secret("GROQ_API_KEY"), temperature=0)
 
 
 prompt = ChatPromptTemplate.from_messages(
