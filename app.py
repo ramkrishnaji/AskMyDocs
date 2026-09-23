@@ -1,7 +1,7 @@
 """
 app.py
 
-Streamlit UI for AskmyDocs 
+Streamlit UI for AskmyDocs (Lumina-style theme).
 Upload a PDF -> Upload -> Chunking -> Embedding -> Retrieval & Answer ->
 chat with citations back to the source page.
 """
@@ -13,7 +13,7 @@ import shutil
 
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_mistralai import ChatMistralAI
+from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 
 from create_db import ingest_pdf
@@ -117,9 +117,9 @@ section[data-testid="stSidebar"] .stButton > button:hover { background: #8c7df5;
 )
 
 
-def get_api_key():
+def get_secret(name):
     # Works both locally (.env) and on Streamlit Cloud (st.secrets)
-    return os.getenv("MISTRAL_API_KEY") or st.secrets.get("MISTRAL_API_KEY", None)
+    return os.getenv(name) or st.secrets.get(name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ if st.session_state.chroma_dir is None:
 
 @st.cache_resource(show_spinner=False)
 def get_llm():
-    return ChatMistralAI(model="mistral-small-2506", api_key=get_api_key())
+    return ChatGroq(model="llama-3.3-70b-versatile", api_key=get_secret("GROQ_API_KEY"), temperature=0)
 
 
 prompt = ChatPromptTemplate.from_messages(
@@ -175,7 +175,7 @@ def is_rate_limit(e: Exception) -> bool:
 
 
 def with_retry(fn, tries=4):
-    """Retry on Mistral 429s with a growing pause (free tier is ~1 request/sec)."""
+    """Retry on 429 rate limits with a growing pause."""
     for i in range(tries):
         try:
             return fn()
@@ -199,7 +199,7 @@ def answer_question(vector_store, query: str):
         response = with_retry(lambda: get_llm().invoke(final_prompt))
     except Exception as e:
         if is_rate_limit(e):
-            return ("Mistral is still rate-limiting after several retries. Wait a few seconds and try again.", [])
+            return ("Groq is still rate-limiting after several retries. Wait a few seconds and try again.", [])
         return (f"Something went wrong while generating the answer: {e}", [])
 
     # source citations (page numbers, deduplicated, in order of relevance)
@@ -231,7 +231,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="model-badge"><span class="dot"></span>mistral-small-2506 · RAG pipeline</div>',
+        '<div class="model-badge"><span class="dot"></span>llama-3.3-70b · Groq · RAG pipeline</div>',
         unsafe_allow_html=True,
     )
 
@@ -249,8 +249,8 @@ with st.sidebar:
     is_new_file = uploaded_file is not None and st.session_state.current_file_name != uploaded_file.name
 
     if is_new_file:
-        if not get_api_key():
-            st.error("MISTRAL_API_KEY not found. Add it to your .env file or Streamlit secrets.")
+        if not get_secret("MISTRAL_API_KEY") or not get_secret("GROQ_API_KEY"):
+            st.error("Add MISTRAL_API_KEY and GROQ_API_KEY to your .env or Streamlit secrets.")
         elif st.button("⚡ Process Document", key="process_btn"):
             steps_box = st.empty()
             bar_box = st.empty()
@@ -277,7 +277,7 @@ with st.sidebar:
                     lambda: ingest_pdf(
                         tmp_path,
                         persist_dir=st.session_state.chroma_dir,
-                        api_key=get_api_key(),
+                        api_key=get_secret("MISTRAL_API_KEY"),
                     ),
                     tries=3,
                 )
@@ -310,7 +310,7 @@ with st.sidebar:
         st.rerun()
 
     st.markdown(
-        '<p class="stack">LangChain · ChromaDB · MistralAI · Streamlit</p>',
+        '<p class="stack">LangChain · ChromaDB · Groq · Mistral · Streamlit</p>',
         unsafe_allow_html=True,
     )
 
