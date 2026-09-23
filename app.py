@@ -1,12 +1,13 @@
 """
 app.py
 
-Streamlit UI for AskmyDocs
+Streamlit UI for AskmyDocs 
 Upload a PDF -> Upload -> Chunking -> Embedding -> Retrieval & Answer ->
 chat with citations back to the source page.
 """
 
 import os
+import time
 import tempfile
 import shutil
 
@@ -97,6 +98,19 @@ section[data-testid="stSidebar"] .stButton > button:hover { background: #8c7df5;
 [data-testid="stChatMessage"] { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.2rem; }
 [data-testid="stChatInput"] { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
 [data-testid="stChatInput"] button { background: var(--accent); color: #fff; }
+
+/* processing steps */
+.steps { display:flex; gap:.5rem; margin:.8rem 0; }
+.step { flex:1; text-align:center; font-size:.7rem; padding:.6rem .2rem; border:1px solid var(--line);
+  border-radius:10px; background: var(--card); color: var(--muted); }
+.step .i { display:block; font-size:1.1rem; margin-bottom:.2rem; }
+.step.done { border-color:#1f5c45; color: var(--text); background:#13241f; }
+.step.active { border-color: var(--accent); color: var(--text); }
+.step.active .i { animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity:.3; } }
+.bar { height:24px; border-radius:999px; color:#fff; font-size:.72rem; display:flex; align-items:center; padding:0 .9rem;
+  background: linear-gradient(90deg,#7c6cf0,#a596ff,#7c6cf0); background-size:200% 100%; animation: slide 1.4s linear infinite; }
+@keyframes slide { to { background-position:-200% 0; } }
 </style>
 """,
     unsafe_allow_html=True,
@@ -155,26 +169,37 @@ Question:
 )
 
 
+def is_rate_limit(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "429" in msg or "rate limit" in msg
+
+
+def with_retry(fn, tries=4):
+    """Retry on Mistral 429s with a growing pause (free tier is ~1 request/sec)."""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            if is_rate_limit(e) and i < tries - 1:
+                time.sleep(2 * (i + 1))
+                continue
+            raise
+
+
 def answer_question(vector_store, query: str):
     """Retrieve relevant chunks, generate an answer, return (answer, sources)."""
     retriever = vector_store.as_retriever(
         search_type="mmr",
         search_kwargs={"k": 4, "fetch_k": 10, "lambda_mult": 0.5},
     )
-    docs = retriever.invoke(query)
-    context = "\n\n".join(doc.page_content for doc in docs)
-
-    final_prompt = prompt.invoke({"context": context, "question": query})
-
     try:
-        response = get_llm().invoke(final_prompt)
+        docs = with_retry(lambda: retriever.invoke(query))
+        context = "\n\n".join(doc.page_content for doc in docs)
+        final_prompt = prompt.invoke({"context": context, "question": query})
+        response = with_retry(lambda: get_llm().invoke(final_prompt))
     except Exception as e:
-        msg = str(e).lower()
-        if "rate" in msg or "429" in msg:
-            return (
-                "The AI service is temporarily rate-limited. Please wait a few seconds and try again.",
-                [],
-            )
+        if is_rate_limit(e):
+            return ("Mistral is still rate-limiting after several retries. Wait a few seconds and try again.", [])
         return (f"Something went wrong while generating the answer: {e}", [])
 
     # source citations (page numbers, deduplicated, in order of relevance)
@@ -213,54 +238,65 @@ with st.sidebar:
     st.markdown('<p class="side-label">Document</p>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader("PDF", type=["pdf"], label_visibility="collapsed")
 
-    if uploaded_file is not None and st.session_state.current_file_name != uploaded_file.name:
+    def tiles(states):
+        labels = [("Reading", "📄"), ("Chunking", "✂️"), ("Embedding", "🧠"), ("Indexing", "💾")]
+        html = "".join(
+            f'<div class="step {st_}"><span class="i">{"✓" if st_ == "done" else ic}</span>{name}</div>'
+            for (name, ic), st_ in zip(labels, states)
+        )
+        return f'<div class="steps">{html}</div>'
+
+    is_new_file = uploaded_file is not None and st.session_state.current_file_name != uploaded_file.name
+
+    if is_new_file:
         if not get_api_key():
             st.error("MISTRAL_API_KEY not found. Add it to your .env file or Streamlit secrets.")
-        else:
-            step_box = st.status("Processing your document...", expanded=True)
+        elif st.button("⚡ Process Document", key="process_btn"):
+            steps_box = st.empty()
+            bar_box = st.empty()
+
+            def show(states, label):
+                steps_box.markdown(tiles(states), unsafe_allow_html=True)
+                bar_box.markdown(f'<div class="bar">{label}</div>', unsafe_allow_html=True)
 
             tmp_dir = tempfile.mkdtemp(prefix="upload_")
             tmp_path = os.path.join(tmp_dir, uploaded_file.name)
-
             try:
-                # Step 1: Upload
-                step_box.write("**1. Upload** — saving file...")
+                show(["active", "pending", "pending", "pending"], "Reading PDF…")
                 with open(tmp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
                 if os.path.getsize(tmp_path) == 0:
                     raise ValueError("The uploaded file is empty.")
-                step_box.write("✅ File received")
+                time.sleep(0.4)
 
-                # Step 2: Chunking
-                step_box.write("**2. Chunking** — splitting the document into passages...")
-                # Step 3: Embedding happens inside ingest_pdf (chunking + embedding + storing)
-                step_box.write("**3. Embedding** — generating vector embeddings...")
+                show(["done", "active", "pending", "pending"], "Chunking…")
+                time.sleep(0.4)
 
-                vector_store, n_chunks = ingest_pdf(
-                    tmp_path,
-                    persist_dir=st.session_state.chroma_dir,
-                    api_key=get_api_key(),
+                show(["done", "done", "active", "pending"], "Building index…")
+                vector_store, n_chunks = with_retry(
+                    lambda: ingest_pdf(
+                        tmp_path,
+                        persist_dir=st.session_state.chroma_dir,
+                        api_key=get_api_key(),
+                    ),
+                    tries=3,
                 )
-
                 if n_chunks == 0:
                     raise ValueError(
                         "No extractable text was found in this PDF (it may be scanned/image-only)."
                     )
 
-                step_box.write(f"✅ {n_chunks} chunks embedded and indexed")
-
-                # Step 4: Retrieval & Answer (ready state)
-                step_box.write("**4. Retrieval & Answer** — ready to take your questions")
-
+                show(["done", "done", "done", "done"], "Ready")
                 st.session_state.vector_store = vector_store
                 st.session_state.current_file_name = uploaded_file.name
                 st.session_state.n_chunks = n_chunks
                 st.session_state.messages = []
-
-                step_box.update(label=f"'{uploaded_file.name}' indexed successfully", state="complete")
+                time.sleep(0.8)
+                st.rerun()
 
             except Exception as e:
-                step_box.update(label="Processing failed", state="error")
+                steps_box.empty()
+                bar_box.empty()
                 st.error(f"Could not process this PDF: {e}")
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
