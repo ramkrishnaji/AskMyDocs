@@ -1,7 +1,7 @@
 """
 app.py
 
-Streamlit UI for AskmyDocs (Lumina-style theme).
+Streamlit UI for AskmyDocs
 Upload a PDF -> Upload -> Chunking -> Embedding -> Retrieval & Answer ->
 chat with citations back to the source page.
 """
