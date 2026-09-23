@@ -230,7 +230,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="model-badge"><span class="dot"></span>llama-3.3-70b · Groq · RAG pipeline</div>',
+        '<div class="model-badge"><span class="dot"></span>gpt-oss-120b · Groq · RAG pipeline</div>',
         unsafe_allow_html=True,
     )
 
