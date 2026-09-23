@@ -7,3 +7,4 @@ langchain-mistralai
 langchain-core
 pypdf
 chromadb
+langchain-groq
